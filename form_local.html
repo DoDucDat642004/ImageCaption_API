@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image caption</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            width: 100vw;
+            background: black;
+            overflow: hidden;
+            color: white;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        video {
+            width: 90%;
+            height: auto;
+            max-height: 80vh;
+            object-fit: contain;
+            border-radius: 10px;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+        }
+
+        button, select {
+            padding: 10px;
+            font-size: 18px;
+            margin: 5px;
+        }
+
+        #photo {
+            display: none;
+            width: 100%;
+            max-width: 400px;
+            margin-top: 10px;
+        }
+
+        #captionResult {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="video-container">
+        <video id="video" autoplay playsinline></video>
+    </div>
+
+    <div class="controls">
+        <select id="languageSelect" disabled>
+            <option value="vi" selected>Vietnamese</option>
+            <option value="en">English</option>
+        </select>
+        <button id="switchCamera" disabled>🔄 Chuyển Camera</button>
+        <p id="captionResult"></p>
+    </div>
+
+    <canvas id="canvas" style="display: none;"></canvas>
+    <img id="photo" />
+
+    <script>
+        const video = document.getElementById("video");
+        const canvas = document.getElementById("canvas");
+        const photo = document.getElementById("photo");
+        const switchCameraButton = document.getElementById("switchCamera");
+        const captionResult = document.getElementById("captionResult");
+        const languageSelect = document.getElementById("languageSelect");
+
+        let currentStream = null;
+        let isBackCamera = false;
+        let isProcessing = false;
+
+        async function startCamera() {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+            try {
+                const constraints = {
+                    video: {
+                        facingMode: isBackCamera ? "environment" : "user",
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                currentStream = stream;
+                speakCaption(languageSelect.value === "vi" ? "Camera đã sẵn sàng." : "Camera is ready.", languageSelect.value);
+                switchCameraButton.disabled = false;
+                languageSelect.disabled = false;
+            } catch (err) {
+                console.error("Lỗi mở camera:", err);
+                alert("Không thể mở camera, vui lòng cấp quyền!");
+                speakCaption(languageSelect.value === "vi" ? "Lỗi mở camera. Hãy kiểm tra quyền truy cập." : "Camera error. Please check access permissions.", languageSelect.value);
+            }
+        }
+
+        switchCameraButton.addEventListener("click", () => {
+            if (isProcessing) {
+                speakCaption(languageSelect.value === "vi" ? "Đang xử lý, vui lòng chờ." : "Processing, please wait.", languageSelect.value);
+                return;
+            }
+            isBackCamera = !isBackCamera;
+            startCamera();
+        });
+
+        languageSelect.addEventListener("change", () => {
+            if (isProcessing) {
+                speakCaption(languageSelect.value === "vi" ? "Đang xử lý, vui lòng chờ." : "Processing, please wait.", languageSelect.value);
+                return;
+            }
+            speakCaption(languageSelect.value === "vi" ? "Bạn đã chọn tiếng Việt." : "You selected English.", languageSelect.value);
+        });
+
+        video.addEventListener("click", () => {
+            if (isProcessing) {
+                speakCaption(languageSelect.value === "vi" ? "Đang xử lý, vui lòng chờ." : "Processing, please wait.", languageSelect.value);
+                return;
+            }
+            isProcessing = true;
+            switchCameraButton.disabled = true;
+            languageSelect.disabled = true;
+            speakCaption(languageSelect.value === "vi" ? "Đang chụp ảnh." : "Capturing image.", languageSelect.value);
+            captureAndUpload();
+        });
+
+        function captureAndUpload() {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const context = canvas.getContext("2d");
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(blob => {
+                if (!blob) {
+                    isProcessing = false;
+                    switchCameraButton.disabled = false;
+                    languageSelect.disabled = false;
+                    speakCaption(languageSelect.value === "vi" ? "Lỗi khi chụp ảnh." : "Error capturing image.", languageSelect.value);
+                    return;
+                }
+                const formData = new FormData();
+                formData.append("file", blob, "image.jpg");
+                formData.append("lang", languageSelect.value);
+                fetch("/predict", { method: "POST", body: formData })
+                    .then(response => response.json())
+                    .then(data => {
+                        captionResult.innerText = "Caption: " + data.caption;
+                        speakCaption(data.caption, languageSelect.value);
+                    })
+                    .catch(error => {
+                        console.error("Lỗi khi gửi ảnh:", error);
+                        speakCaption(languageSelect.value === "vi" ? "Lỗi xử lý ảnh." : "Image processing error.", languageSelect.value);
+                    })
+                    .finally(() => {
+                        isProcessing = false;
+                        switchCameraButton.disabled = false;
+                        languageSelect.disabled = false;
+                    });
+            }, "image/jpeg");
+        }
+
+        function speakCaption(text, lang) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = lang === "vi" ? "vi" : "en";
+            speechSynthesis.speak(utterance);
+        }
+
+        startCamera();
+    </script>
+</body>
+</html>
